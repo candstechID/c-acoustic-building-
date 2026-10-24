@@ -5,7 +5,7 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'c-acoustic-live-rta-source.zip'
+      - '*.zip'
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository (to access uploaded ZIP)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -23,38 +23,58 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Find uploaded source ZIP
+      - name: Find C Acoustic source ZIP
         id: srczip
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="$GITHUB_WORKSPACE/c-acoustic-live-rta-source.zip"
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::File c-acoustic-live-rta-source.zip tidak ditemukan di root repository."
+          ROOT="$GITHUB_WORKSPACE"
+          ZIP_FILE=""
+
+          # Prefer the newest named project package; otherwise accept any c-acoustic*.zip.
+          for candidate in \
+            "$ROOT/c-acoustic-transfer-function-v0.4.0.zip" \
+            "$ROOT/c-acoustic-next-build-v0.3.0.zip" \
+            "$ROOT/c-acoustic-live-rta-source.zip"; do
+            if [ -f "$candidate" ]; then ZIP_FILE="$candidate"; break; fi
+          done
+
+          if [ -z "$ZIP_FILE" ]; then
+            ZIP_FILE="$(find "$ROOT" -maxdepth 1 -type f -iname 'c-acoustic*.zip' -print | head -n 1 || true)"
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::Tidak ditemukan ZIP bernama c-acoustic*.zip di root repository. Unggah ZIP source C Acoustic ke halaman Code, bukan ke folder."
+            echo "Isi root repository:"
+            ls -la "$ROOT"
             exit 1
           fi
+
+          echo "Menggunakan source ZIP: $(basename "$ZIP_FILE")"
           echo "file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Extract source ZIP in runner (no repository extraction/commit needed)
+      - name: Extract source ZIP on runner
         shell: bash
         run: |
           set -euo pipefail
-          SRC_DIR="$RUNNER_TEMP/c-acoustic-src"
-          mkdir -p "$SRC_DIR"
-          unzip -q "${{ steps.srczip.outputs.file }}" -d "$SRC_DIR"
+          DEST="$RUNNER_TEMP/c-acoustic-src"
+          mkdir -p "$DEST"
+          unzip -q "${{ steps.srczip.outputs.file }}" -d "$DEST"
 
-          # If ZIP contains one wrapping directory, use that as project root.
-          if [ ! -f "$SRC_DIR/settings.gradle.kts" ]; then
-            SETTINGS_FILE="$(find "$SRC_DIR" -mindepth 2 -maxdepth 4 -type f -name settings.gradle.kts -print -quit)"
+          if [ -f "$DEST/settings.gradle.kts" ]; then
+            SRC_DIR="$DEST"
+          else
+            SETTINGS_FILE="$(find "$DEST" -mindepth 2 -maxdepth 5 -type f -name settings.gradle.kts -print -quit)"
             if [ -z "$SETTINGS_FILE" ]; then
-              echo "::error::settings.gradle.kts tidak ditemukan di dalam ZIP."
+              echo "::error::settings.gradle.kts tidak ditemukan dalam ZIP. Pastikan yang diunggah adalah ZIP source project."
+              find "$DEST" -maxdepth 3 -type f | head -n 80
               exit 1
             fi
             SRC_DIR="$(dirname "$SETTINGS_FILE")"
           fi
           echo "SRC_DIR=$SRC_DIR" >> "$GITHUB_ENV"
 
-      - name: Locate Android SDK and install required packages
+      - name: Locate Android SDK and install packages
         shell: bash
         run: |
           set -euo pipefail
@@ -81,14 +101,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
 
-      - name: Generate Gradle Wrapper if absent
+      - name: Generate Gradle Wrapper if missing
         shell: bash
         working-directory: ${{ env.SRC_DIR }}
         run: |
           set -euo pipefail
-          if [ ! -f ./gradlew ]; then
-            gradle wrapper --gradle-version 8.9
-          fi
+          if [ ! -f ./gradlew ]; then gradle wrapper --gradle-version 8.9; fi
           chmod +x ./gradlew
 
       - name: Build debug APK
@@ -103,3 +121,4 @@ jobs:
           path: ${{ env.SRC_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+          
